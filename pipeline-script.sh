@@ -18,12 +18,11 @@ SAMPLE=my_sample
 REF_PATH=/home/scw1557/UNIX_5/BWA
 R1=ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR525/007/SRR5252327/SRR5252327_1.fastq.gz
 R2=ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR525/007/SRR5252327/SRR5252327_2.fastq.gz
-R1_base="${R1##*/}" # gets filename from download link
-R2_base="${R1##*/}"
-while getopts "r1:r2:s:r:o:a:" opt; do
+
+declare -a READS # Array to hold R1, R2 ... file names
+while getopts "r:s:o:a:" opt; do
 	case "$opt" in
-	r1) R1=$OPTARG ;; # R1 file path
-	r2) R2=$OPTARG ;; # R2 file path
+	r) READS+=$OPTARG ;; # R file paths	
 	s) SAMPLE=$OPTARG ;; # sample path
 	o) OUTDIR=$OPTARG ;; # Output directory
 	a) ANNOVAR_DB=$OPTARG ;; # capture argument for different annovar path if wanted.	
@@ -32,9 +31,9 @@ while getopts "r1:r2:s:r:o:a:" opt; do
 done
 
 # check inputs
-if [ -z "${R1:-}" ] || [ ! -e $1 ] || [ ! -e $2 ]
+if [ "${#READS[@]:-}" -eq 1 ]; # make sure at least 1 read file is provided
 then
-	echo "Correct usage $0 [R1 link] [R2 link]"
+	echo "Use -r to specify at least 1 read file"
 	exit 1
 fi
 # Create file structure
@@ -48,26 +47,29 @@ module load samtools
 module load java
 
 load_data() {
+	i = 1 # iterator
 	cd "$OUTDIR/data"
-	echo -e "Downloading R1...\n" | tee -a $LOG_FILE # Using -e for newline char (neater than using random echo calls)
-	wget $R1
-	echo -e "Downloading R2...\n" | tee -a $LOG_FILE
-	wget $R2
-	# Set file permissions to read only
+	# loop over data array and dowmload each
+	for data in "${READS[@]}"; do
+		echo -e "Downloading R$i...\n" | tee -a $LOG_FILE # Using -e for newline char (neater than using random echo calls)
+		wget $data
+		((i++))
+	done
+	# Set file permissions to read only	
 	echo -e "Setting file permissions to read only...\n" | tee -a $LOG_FILE
-	chmod 444 $R1_base $R2_base
+	chmod 444 
 	# Create symbolic links to mapping dir
 	echo -e "Creating symbolic links...\n" | tee -a $LOG_FILE
 	cd ../mapping
-	ln -s ../data/$R1_base R1.fastq.gz
-	ln -s ../data/$R2_base R2.fastq.gz
+	j=1
+	for path in "${READS[@]}"; do
+		basename "$path"
+		ln -s ../data/$path R$j.fastq.gz
+		((j++))
+	done
+	
 }
-map_data() {
-	# capture data list passed to function
-	local data_list=("$@")
-	for item in "${data_list[@]}"; do
-		gunzip -c $item | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R1:"
-}
+
 # Set file permissions to read only
 # chmod 444 SRR5252327_1.fastq.gz
 # chmod 444 SRR5252327_2.fastq.gz
@@ -78,12 +80,22 @@ map_data() {
 # ln -s ../data/SRR5252327_1.fastq.gz R1.fastq.gz
 # ln -s ../data/SRR5252327_2.fastq.gz R2.fastq.gz
 
-echo
-gunzip -c R1.fastq.gz | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R1:"
-gunzip -c R2.fastq.gz | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R2:"
-echo
-echo
-echo "Mapping data..."
+# echo
+# gunzip -c R1.fastq.gz | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R1:"
+# gunzip -c R2.fastq.gz | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R2:"
+# echo
+# echo
+# echo "Mapping data..."
+map_data() {
+	# capture data list passed to function
+	i=1
+	local data_list=("$@")	
+	for item in "${data_list[@]}"; do
+		gunzip -c $item | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R$i:"
+		((i++))
+	done
+	
+}
 bwa mem -R "@RG\tID:$SAMPLE\tPL:illumina\tSM:$SAMPLE" \
 $REF_PATH/hg38.fasta \
 R1.fastq.gz \
