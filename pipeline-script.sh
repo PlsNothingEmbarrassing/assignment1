@@ -4,15 +4,15 @@ set -eou pipefail
 
 help() {
 	echo "Input structure: $0 
-	-r1 R1.fastq.gz,
-	-r2 R2.fastq.gz	
-	-s sample,
-	-r reference path,
-	-o output directory,
-	-a annovar db path"
+	-1 R1.fastq.gz,
+	-2 R2.fastq.gz (Optional),	
+	-s sample (Optional, will use default if not provided),
+	-r reference path (Optional, will use default if not provided),
+	-o output directory (Optional, will use default if not provided),
+	-a annovar db path (Optional, will use default if not provided)"
 }
 
-# Set default vals for args (for debugging so I only have to define output dir)
+# Set default vals for args (for debugging so I only have to define input files)
 ANNOVAR_DB=/home/scw1557/UNIX_5/annovar/humandb
 SAMPLE=my_sample
 REF_PATH=/home/scw1557/UNIX_5/BWA
@@ -30,7 +30,7 @@ while getopts "1:2:s:o:a:" opt; do
 		s) SAMPLE=$OPTARG ;;  # sample path
 		o) OUTDIR=$OPTARG ;;  # output directory
 		a) ANNOVAR_DB=$OPTARG ;;  # optional annovar path
-		*) echo "Invalid option" && exit 1 ;;
+		*) help ;;
 	esac
 done
 
@@ -149,7 +149,7 @@ summarise_coverage(){
 	cut -f4 $SAMPLE\.pileup | sort | uniq -c | sort -n -k2 | awk ' { t = $1; $1 = $2; $2 = t; print $1 "\t" $2; } ' >> coverage_depth.txt
 }
 
-annotate_variation(){
+annotate_variants(){
 	cd ..
 	cd variants
 	echo "Call variants with varscan..."
@@ -182,7 +182,30 @@ annotate_variation(){
 	cut -f2 annovar_out.exonic_variant_function | cut -f1 -d' ' > cols2.txt
 	cut -f3 annovar_out.exonic_variant_function | cut -f1,3,4,5 -d':' --output-delimiter=" " | tr ' ' '\t' > cols3.txt
 	cut -f4,5,7,8 annovar_out.exonic_variant_function > cols4578.txt
-	paste cols4578.txt cols3.txt cols2.txt >> final.txt
+	paste cols4578.txt cols3.txt cols2.txt >> final.txt	
+	# Get column containing info, discard irrelevant info. 
+	# Split columns by ; delimiter, assign 1/1, 0/1 based on the values of the columns
+	# Paste the final file with the temp file to make sure move is successful before overwriting
+	# Add column name "Genotype" to snps.csv	
+	# Step 1: Generate the genotype data column (e.g., "1/1" or "0/1") and save it as a new column file
+	grep -v "^#" my_sample.vcf | cut -f8 | \
+	cut -f3,4 -d';' | \
+	awk -F';' '{
+		split($1, a, "="); 
+		split($2, b, "="); 
+		if (b[2] == 1) 
+			print "1/1"; 
+		else if (a[2] == 1) 
+			print "0/1"; 
+		else 
+			print "0/1";
+	}' > genotype_data.txt
+
+	# Add the "Genotype" header to the genotype_data.txt file
+	echo "Genotype" | cat - genotype_data.txt > temp_genotype_data.txt && mv temp_genotype_data.txt genotype_data.txt
+
+	# Combine the header with the existing snps.csv using paste
+	paste -d',' snps.csv genotype_data.txt > temp_snps.csv && mv temp_snps.csv snps.csv	
 	
 	# Set final file permissions to read-only and display the content
 	chmod 444 final.txt
@@ -193,36 +216,49 @@ annotate_variation(){
 }
 compare_varscan(){
 	# Run varscan with different min coverage values and compare outputs
-	for min_coverage in 10 20 30; do
-		echo "Running varscan with min coverage $min_coverage..."
-		java -jar /software/genomics/varscan/2.4.1/VarScan.jar mpileup2snp $SAMPLE\.pileup --min-coverage $min_coverage --output-vcf 1 > $SAMPLE\_cov$min_coverage\.vcf 2>> ../log
-		echo "Done!"
+	for min_coverage in 5 10 15 20; do
+		java -jar /software/genomics/varscan/2.4.1/VarScan.jar mpileup2snp $SAMPLE\.pileup --min-coverage $min_coverage --output-vcf 1 > $SAMPLE\_mincov$min_coverage\.vcf 2>> ../log
+		echo "Done with min coverage $min_coverage"
+	done
+	
+	# Compare the number of SNPs identified for each min coverage value
+	for min_coverage in 5 10 15 20; do
+		echo "Total number of SNPs identified with min coverage $min_coverage:"
+		grep -vc "^#" $SAMPLE\_mincov$min_coverage\.vcf
 	done
 
-	echo "Comparing outputs with diff..."
-	for min_coverage in 10 20 30; do
-		if [[ $min_coverage -ne 10 ]]; then
-			prev_coverage=$((min_coverage - 10))
-			echo "Comparing coverage $prev_coverage and $min_coverage..."
-			diff $SAMPLE\_cov$prev_coverage\.vcf $SAMPLE\_cov$min_coverage\.vcf > diff_cov$prev_coverage\_cov$min_coverage\.txt
-			echo "Done!"
-		fi
-	done
+	
+	# THIS SECTION IS SEPERATE AS DIFF WOULD MAKE THE SCRIPT EXIT PREMATURELY
+	# # Compare the number of SNPs identified for each min coverage value 
+	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov5.vcf | cut -f1,2,4,5 | sort) > diff_mincov5.txt
+	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov10.vcf | cut -f1,2,4,5 | sort) > diff_mincov10.txt
+	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov15.vcf | cut -f1,2,4,5 | sort) > diff_mincov15.txt
+	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov20.vcf | cut -f1,2,4,5 | sort) > diff_mincov20.txt
+	
+}
+
+clean_up(){
+	# remove unnecessary files, keep only the final output files
+	rm cols2.txt cols3.txt cols4578.txt ../mapping/my_sample.sam my_sample.av my_sample.pileup annovar_out.exonic_variant_function annovar_out.variant_function genotype_data.txt
+	#rm my_sample_mincov5.vcf my_sample_mincov10.vcf my_sample_mincov15.vcf my_sample_mincov20.vcf
+	# Coverage depth file should be kept for quality control purposes
+	# vcf file should be kept for comparison purposes
+	# # Leave directory.
+	cd ..
+	# Leave working directory
+	cd ..
+	echo "Create tarball from working directory..."
+	tar czf $OUTDIR\.tar.gz $OUTDIR
+	echo
+	echo "Complete!"
 }
 rm -r output
 load_data
 map_data 
 summarise_coverage
-annotate_variation
+annotate_variants
+compare_varscan
+clean_up
 
 
 
-
-# # Leave directory.
-# cd ..
-# # Leave working directory
-# cd ..
-# echo "Create tarball from working directory..."
-# tar czf $OUTDIR\.tar.gz $OUTDIR
-# echo
-# echo "Complete!"
