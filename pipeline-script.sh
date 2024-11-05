@@ -117,15 +117,6 @@ map_data() {
 	echo "Summarise mapping..."
 	samtools view $SAMPLE\.bam | cut -f3 | uniq -c | sort -n
 
-	# Check if the BAM index file is correct
-	if samtools idxstats $SAMPLE\.bam > /dev/null 2>&1; then
-		echo "BAM index file is correct." | tee -a "$LOG_FILE"
-	else
-		echo "Error: BAM index file is not correct." | tee -a "$LOG_FILE"
-		exit 1
-	fi
-
-
 }
 
 summarise_coverage(){
@@ -187,7 +178,7 @@ annotate_variants(){
 	# Split columns by ; delimiter, assign 1/1, 0/1 based on the values of the columns
 	# Paste the final file with the temp file to make sure move is successful before overwriting
 	# Add column name "Genotype" to snps.csv	
-	# Step 1: Generate the genotype data column (e.g., "1/1" or "0/1") and save it as a new column file
+	# Generate the genotype data column (e.g., "1/1" or "0/1") and save it as a new column file
 	grep -v "^#" my_sample.vcf | cut -f8 | \
 	cut -f3,4 -d';' | \
 	awk -F';' '{
@@ -227,14 +218,30 @@ compare_varscan(){
 		grep -vc "^#" $SAMPLE\_mincov$min_coverage\.vcf
 	done
 
-	
-	# THIS SECTION IS SEPERATE AS DIFF WOULD MAKE THE SCRIPT EXIT PREMATURELY
-	# # Compare the number of SNPs identified for each min coverage value 
-	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov5.vcf | cut -f1,2,4,5 | sort) > diff_mincov5.txt
-	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov10.vcf | cut -f1,2,4,5 | sort) > diff_mincov10.txt
-	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov15.vcf | cut -f1,2,4,5 | sort) > diff_mincov15.txt
-	# #diff <(grep -v "^#" my_sample.vcf | cut -f1,2,4,5 | sort) <(grep -v "^#" my_sample_mincov20.vcf | cut -f1,2,4,5 | sort) > diff_mincov20.txt
-	
+	reference_file=$SAMPLE.vcf
+
+	# Loop through all VCF files in the current directory
+	for vcf_file in *.vcf; do
+		# Skip the reference file
+		if [[ "$vcf_file" == "$reference_file" ]]; then
+			continue
+		fi
+
+		echo "Comparing $vcf_file to $reference_file"
+		vcf_content=$(grep -v "^#" $vcf_file)
+		reference_content=$(grep -v "^#" $reference_file)
+		diff_ouput=""
+		# Compare the current VCF file to the reference and save differences to a temp file
+		diff_output=$(diff <(echo "$reference_content") <(echo "$vcf_content") || true)
+		
+		# Check if there are differences
+		if [ -z "$diff_output" ]; then
+		 	echo "No differences found between $vcf_file and $reference_file."
+		else
+			echo "Differences found between $vcf_file and $reference_file. Saving to ${vcf_file%.vcf}_diff.txt"
+			echo -e "$diff_output\n" > "${vcf_file%.vcf}_diff.txt"
+		fi
+	done
 }
 
 clean_up(){
@@ -257,7 +264,8 @@ load_data
 map_data 
 summarise_coverage
 annotate_variants
-compare_varscan
+
+compare_varscan 
 clean_up
 
 
